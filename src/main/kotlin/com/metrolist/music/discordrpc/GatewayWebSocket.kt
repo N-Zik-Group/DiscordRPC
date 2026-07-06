@@ -34,6 +34,7 @@ import timber.log.Timber
 import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import android.os.Build
 
 class GatewayWebSocket(
     private val token: String,
@@ -278,8 +279,8 @@ class GatewayWebSocket(
             systemLocale = Locale.getDefault().toString(),
             clientVersion = "314.13 - Stable",
             releaseChannel = "googleRelease",
-            osVersion = android.os.Build.VERSION.RELEASE,
-            osSdkVersion = android.os.Build.VERSION.SDK_INT.toString(),
+            osVersion = Build.VERSION.RELEASE,
+            osSdkVersion = Build.VERSION.SDK_INT.toString(),
             clientBuildNumber = 314013,
         )
         Timber.tag(tag).i("-> IDENTIFY: os=$os browser=$browser device=$device")

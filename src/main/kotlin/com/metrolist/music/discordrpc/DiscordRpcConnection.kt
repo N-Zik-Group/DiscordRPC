@@ -208,7 +208,7 @@ class DiscordRpcConnection(
                     }
                 }
                 val text = response.bodyAsText()
-                val json = org.json.JSONObject(text)
+                val json = JSONObject(text)
                 val id = json.getString("id")
                 val username = json.getString("username")
                 val name = json.optString("global_name", username)
