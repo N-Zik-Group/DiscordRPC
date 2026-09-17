@@ -36,4 +36,12 @@ dependencies {
     compileOnly("org.json:json:20231013")
 
     coreLibraryDesugaring(libs.desugaring.nio)
+
+    testImplementation(libs.bundles.junit5)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testRuntimeOnly(libs.junit.platform)
+}
+
+tasks.withType<Test> {
+    useJUnitPlatform()
 }

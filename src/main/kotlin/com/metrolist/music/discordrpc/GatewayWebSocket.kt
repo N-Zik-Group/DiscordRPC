@@ -407,7 +407,7 @@ class GatewayWebSocket(
         reconnectionJob?.cancel()
         heartbeatJob?.cancel()
         heartbeatWatchdogJob?.cancel()
-        kotlinx.coroutines.runBlocking {
+        launch {
             try {
                 session?.close()
             } catch (_: Exception) { }
