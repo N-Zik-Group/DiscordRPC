@@ -19,7 +19,6 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -43,7 +42,7 @@ class GatewayWebSocket(
     private val device: String,
 ) : CoroutineScope {
     private val job = SupervisorJob()
-    override val coroutineContext = job + Dispatchers.Default
+    override val coroutineContext = job + DiscordRpc.backgroundDispatcher
     private val tag = "DiscordGateway"
 
     private val client = HttpClient {

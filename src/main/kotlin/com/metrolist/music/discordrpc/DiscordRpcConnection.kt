@@ -12,7 +12,6 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
@@ -40,7 +39,7 @@ class DiscordRpcConnection(
     private val tag = "DiscordRpc"
     private val gateway = GatewayWebSocket(token, os, browser, device)
     private val httpClient = HttpClient()
-    private val httpScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val httpScope = CoroutineScope(SupervisorJob() + DiscordRpc.backgroundDispatcher)
     private var lastUpdateTime = 0L
     private val minUpdateInterval = 500L // Minimum 500ms between updates
 

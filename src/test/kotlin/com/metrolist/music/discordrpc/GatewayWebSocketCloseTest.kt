@@ -7,8 +7,8 @@ import org.junit.jupiter.api.Test
 /**
  * close() used to run `runBlocking { session?.close() }` — a blocking call reachable from Main
  * via DiscordRpcConnection.closeDirect(). It now launches on the class's own CoroutineScope
- * (Dispatchers.Default) instead, so the caller is never blocked waiting for the network close
- * handshake.
+ * ([DiscordRpc.backgroundDispatcher]) instead, so the caller is never blocked waiting for the
+ * network close handshake.
  *
  * A full regression test proving the caller thread is never blocked would require mocking ktor's
  * DefaultClientWebSocketSession (a complex external type with no test seam) to simulate a slow
