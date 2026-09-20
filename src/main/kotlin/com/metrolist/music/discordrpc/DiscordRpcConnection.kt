@@ -11,6 +11,7 @@ import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -39,7 +40,7 @@ class DiscordRpcConnection(
     private val tag = "DiscordRpc"
     private val gateway = GatewayWebSocket(token, os, browser, device)
     private val httpClient = HttpClient()
-    private val httpScope = CoroutineScope(SupervisorJob() + DiscordRpc.backgroundDispatcher)
+    private val httpScope = CoroutineScope(SupervisorJob() + DiscordRpc.backgroundDispatcher + httpScopeExceptionHandler)
     private var lastUpdateTime = 0L
     private val minUpdateInterval = 500L // Minimum 500ms between updates
 
@@ -190,6 +191,10 @@ class DiscordRpcConnection(
     companion object {
         private const val APPLICATION_ID = "1411019391843172514"
         private const val TAG = "DiscordRpc"
+
+        internal val httpScopeExceptionHandler = CoroutineExceptionHandler { _, e ->
+            Timber.tag("DiscordRpc").e(e, "httpScope coroutine failed")
+        }
 
         suspend fun getUserInfo(
             token: String,
