@@ -10,7 +10,8 @@ import com.metrolist.music.discordrpc.entities.Presence
 import com.metrolist.music.discordrpc.entities.Ready
 import com.metrolist.music.discordrpc.entities.Resume
 import io.ktor.client.HttpClient
-import io.ktor.client.plugins.ResponseException
+import io.ktor.client.engine.okhttp.OkHttpConfig
+import io.ktor.client.engine.okhttp.OkHttpEngine
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocketSession
@@ -36,7 +37,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import timber.log.Timber
+import java.util.Collections
 import java.util.Locale
+import java.util.WeakHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -51,7 +55,31 @@ open class GatewayWebSocket(
     private val browser: String,
     private val device: String,
     private val gatewayUrl: String = GATEWAY_URL,
-    private val clientFactory: () -> HttpClient = { HttpClient { install(WebSockets) } },
+    private val clientFactory: () -> HttpClient = {
+        // The default engine (OkHttp) sees the raw upgrade response before Ktor's pipeline
+        // turns a refusal into a bare exception that carries no status or headers: record
+        // the refusal so establishConnection() can honor a 429 and its Retry-After
+        // (upstream parity: DiscordGateway.onFailure reads both off the OkHttp response).
+        // A default-argument expression cannot reference instance state, so the capture
+        // lives on a holder registered in the companion, keyed by the engine config.
+        val holder = RefusalHolder()
+        val config = OkHttpConfig().apply {
+            addInterceptor { chain ->
+                val response = chain.proceed(chain.request())
+                if (response.code != 101) {
+                    holder.value = UpgradeRefusal(
+                        status = response.code,
+                        retryAfterSeconds = response.header(HttpHeaders.RetryAfter)?.toLongOrNull(),
+                    )
+                }
+                response
+            }
+        }
+        registerRefusalHolder(config, holder)
+        HttpClient(OkHttpEngine(config)) {
+            install(WebSockets)
+        }
+    },
 ) : CoroutineScope {
     private val job = SupervisorJob()
     override val coroutineContext = job + DiscordRpc.backgroundDispatcher + gatewayExceptionHandler
@@ -74,6 +102,7 @@ open class GatewayWebSocket(
     private var reconnectionJob: Job? = null
     private var currentReconnectDelay = INITIAL_RECONNECT_DELAY
     private var intentionalClose = false
+    private var closed = false
     private var lastHeartbeatAckReceivedAt = 0L
     private var heartbeatWatchdogJob: Job? = null
     private var lastPresence: Presence? = null
@@ -83,8 +112,37 @@ open class GatewayWebSocket(
     /** True once the gateway gave up retrying (see [MAX_RECONNECT_ATTEMPTS]). */
     val reconnectAbandoned: StateFlow<Boolean> = _reconnectAbandoned
 
+    /**
+     * Consecutive failed automatic reconnections. Atomic: [connect] is called from the
+     * app's threads while the reconnection loop runs on [DiscordRpc.backgroundDispatcher],
+     * so the check-then-increment in [beginReconnectionAttempt] must not race.
+     */
+    private val reconnectAttemptsCounter = AtomicInteger(0)
+
     /** Consecutive failed automatic reconnections; exposed for tests. */
-    internal var reconnectAttempts = 0
+    internal val reconnectAttempts: Int get() = reconnectAttemptsCounter.get()
+
+    /**
+     * The HTTP refusal of the most recent upgrade attempt. In production the OkHttp
+     * interceptor of the default [clientFactory] captures it (a refused upgrade surfaces
+     * in Ktor as a bare exception with no status and no headers); tests set it directly.
+     */
+    @Volatile
+    internal var lastUpgradeRefusal: UpgradeRefusal? = null
+
+    /** An HTTP refusal of the WebSocket upgrade: status + Retry-After seconds when the header is present. */
+    internal data class UpgradeRefusal(val status: Int, val retryAfterSeconds: Long?)
+
+    /**
+     * Pulls the production interceptor's capture into [lastUpgradeRefusal] and clears the
+     * capture slot. No-op when the engine registered no holder (test fakes, custom engines).
+     */
+    internal fun consumeCapturedUpgradeRefusal() {
+        val holder = lookupRefusalHolder(client.engine.config) ?: return
+        val captured = holder.value ?: return
+        holder.value = null
+        lastUpgradeRefusal = captured
+    }
 
     open fun isSessionEstablished(): Boolean = sessionEstablished
 
@@ -93,12 +151,16 @@ open class GatewayWebSocket(
      * disconnect). Resets the reconnection budget so a fresh attempt cycle starts.
      */
     fun connect() {
-        reconnectAttempts = 0
+        reconnectAttemptsCounter.set(0)
         _reconnectAbandoned.update { false }
         connectInternal()
     }
 
     private fun connectInternal() {
+        if (closed) {
+            Timber.tag(tag).w("connect() called after close() — client already released, ignoring")
+            return
+        }
         if (connected) {
             Timber.tag(tag).d("connect() called but already connected")
             return
@@ -130,24 +192,28 @@ open class GatewayWebSocket(
                 header("User-Agent", USER_AGENT)
                 header("Accept-Language", systemLocale)
             }
-        } catch (e: ResponseException) {
-            // The gateway rate-limits the upgrade with 429 + a Retry-After header (upstream
-            // parity: DiscordGateway.onFailure reads the header, parseRetryAfter() the delay).
-            val status = e.response.status.value
-            val retryAfterSeconds = e.response.headers[HttpHeaders.RetryAfter]?.toLongOrNull()
-            Timber.tag(tag).e(e, "WebSocket upgrade rejected: HTTP $status on $url, retryAfter=${retryAfterSeconds}s")
-            connected = false
-            scheduleReconnection(rateLimited = status == 429, retryAfterSeconds = retryAfterSeconds)
-            return
         } catch (e: Exception) {
-            Timber.tag(tag).e(e, "WebSocket connection failed to $url")
+            // Ktor turns a refused upgrade into a bare exception (WebSocketException for
+            // a non-101 status, or a cast failure for the missing session content) that
+            // carries no status and no headers: the real HTTP refusal lives in
+            // lastUpgradeRefusal, captured by the interceptor of the default clientFactory
+            // (upstream parity: DiscordGateway.onFailure reads status + Retry-After from
+            // the OkHttp response).
+            consumeCapturedUpgradeRefusal()
+            val refusal = lastUpgradeRefusal
+            lastUpgradeRefusal = null
+            Timber.tag(tag).e(e, "WebSocket connection to $url failed" + (if (refusal != null) " (HTTP ${refusal.status})" else ""))
             connected = false
+            if (refusal?.status == 429) {
+                scheduleReconnection(rateLimited = true, retryAfterSeconds = refusal.retryAfterSeconds)
+                return
+            }
             throw e
         }
 
         connected = true
         currentReconnectDelay = INITIAL_RECONNECT_DELAY
-        reconnectAttempts = 0
+        reconnectAttemptsCounter.set(0)
         _reconnectAbandoned.update { false }
         Timber.tag(tag).i("WebSocket connected to $url")
 
@@ -397,14 +463,14 @@ open class GatewayWebSocket(
      * so a flapping network can never produce an unbounded reconnect loop.
      */
     private fun beginReconnectionAttempt(): Boolean {
-        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        if (reconnectAttemptsCounter.get() >= MAX_RECONNECT_ATTEMPTS) {
             if (!_reconnectAbandoned.value) {
                 Timber.tag(tag).e("Reconnection abandoned after $reconnectAttempts attempts — RPC stays offline until a manual connect()")
                 _reconnectAbandoned.update { true }
             }
             return false
         }
-        reconnectAttempts += 1
+        reconnectAttemptsCounter.incrementAndGet()
         return true
     }
 
@@ -472,6 +538,12 @@ open class GatewayWebSocket(
                 Timber.tag(tag).w("updatePresence: timed out waiting for session (30s)")
                 return
             }
+            // close() released the client, or the gateway abandoned its retry budget:
+            // the session can never come up — do not sit out the full 30 s for nothing.
+            if (closed || _reconnectAbandoned.value) {
+                Timber.tag(tag).w("updatePresence: gateway closed or abandoned while waiting — aborting early")
+                return
+            }
         }
         // The wait above can take up to 30s: re-validate staleness right before
         // writing, not only at the call site, or a superseded presence could still
@@ -527,6 +599,10 @@ open class GatewayWebSocket(
     fun close() {
         Timber.tag(tag).i("close() called — stopping connection")
         intentionalClose = true
+        // Terminal: the client is released below, so a later connect()/setActivity() on
+        // this instance must not start attempts against a dead client (they would burn
+        // the reconnection budget and flip reconnectAbandoned — a false toast).
+        closed = true
         reconnectionJob?.cancel()
         heartbeatJob?.cancel()
         heartbeatWatchdogJob?.cancel()
@@ -562,5 +638,30 @@ open class GatewayWebSocket(
 
         /** A 429 without a usable Retry-After waits at least this long (upstream parity: 60 s floor). */
         private const val MIN_RATE_LIMIT_DELAY_SECONDS = 60L
+
+        /**
+         * Refusal-capture holders for the default [clientFactory], keyed by the owning
+         * client's engine config. A constructor default-argument expression cannot write
+         * instance state, so the interceptor registers its holder here and
+         * [consumeCapturedUpgradeRefusal] looks it up through the engine config.
+         */
+        private val refusalHolders = Collections.synchronizedMap(WeakHashMap<Any, RefusalHolder>())
+
+        private fun registerRefusalHolder(config: Any, holder: RefusalHolder) {
+            refusalHolders[config] = holder
+        }
+
+        private fun lookupRefusalHolder(config: Any): RefusalHolder? =
+            refusalHolders[config]
     }
+}
+
+/**
+ * Single mutable slot for [GatewayWebSocket.UpgradeRefusal], written by the OkHttp
+ * interceptor of the default [GatewayWebSocket.clientFactory] and read by
+ * [GatewayWebSocket.consumeCapturedUpgradeRefusal].
+ */
+internal class RefusalHolder {
+    @Volatile
+    var value: GatewayWebSocket.UpgradeRefusal? = null
 }

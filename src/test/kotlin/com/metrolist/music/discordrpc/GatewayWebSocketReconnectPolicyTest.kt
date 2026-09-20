@@ -1,5 +1,19 @@
+// The RecordingEngine below implements ktor's HttpClientEngine, which is @InternalAPI in Ktor 3
+// (engine implementations are an internal extension point). The opt-in is test-only: production
+// code never implements an engine, it only calls HttpClient.close().
+@file:OptIn(InternalAPI::class)
+
 package com.metrolist.music.discordrpc
 
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.HttpClientEngine
+import io.ktor.client.engine.HttpClientEngineConfig
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.request.HttpRequestData
+import io.ktor.client.request.HttpResponseData
+import io.ktor.utils.io.InternalAPI
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -12,10 +26,18 @@ import kotlin.time.Duration.Companion.seconds
  * 429 rate-limit delays (Retry-After, 60 s floor), ±25 % backoff jitter, and the close codes that
  * must NOT trigger an automatic reconnect (1000 clean remote close, 4004 invalid token, 4014 invalid
  * shard). The helpers under test are pure functions, so no dispatcher or network is involved.
+ * The gateway is built on a recording engine (never a real OkHttp-backed client, which would be
+ * created — and leaked — per test instance).
  */
 class GatewayWebSocketReconnectPolicyTest {
 
-    private val gateway = GatewayWebSocket(token = "t", os = "Android", browser = "b", device = "d")
+    private val gateway = GatewayWebSocket(
+        token = "t",
+        os = "Android",
+        browser = "b",
+        device = "d",
+        clientFactory = { HttpClient(RecordingEngine()) { install(WebSockets) } },
+    )
 
     @Test
     fun `a 429 honors the Retry-After header with a 60s floor`() {
@@ -67,5 +89,18 @@ class GatewayWebSocketReconnectPolicyTest {
         assertTrue(gateway.reconnectsOnClose(4006))
         assertTrue(gateway.reconnectsOnClose(4008))
         assertTrue(gateway.reconnectsOnClose(-1), "a network drop without a close frame must reconnect")
+    }
+
+    /** Minimal engine that never executes requests (the tests here only use pure helpers). */
+    private class RecordingEngine : HttpClientEngine {
+        override val coroutineContext: kotlin.coroutines.CoroutineContext = Dispatchers.Unconfined
+        override val dispatcher: CoroutineDispatcher = Dispatchers.Unconfined
+        override val config: HttpClientEngineConfig = HttpClientEngineConfig()
+
+        override fun close() {
+        }
+
+        override suspend fun execute(request: HttpRequestData): HttpResponseData =
+            error("RecordingEngine does not execute requests")
     }
 }
