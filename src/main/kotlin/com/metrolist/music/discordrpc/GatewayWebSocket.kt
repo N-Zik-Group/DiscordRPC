@@ -385,6 +385,13 @@ class GatewayWebSocket(
                 d = Presence(activities = emptyList(), since = null, status = "online", afk = false),
             )
         }
+        // Forget the previous presence so a reconnection (READY/RESUMED dispatch)
+        // never re-sends an activity the app no longer wants: resendLastPresence()
+        // would otherwise resurrect a stale "Browsing" status after the user
+        // disabled it. Clearing while the session is down must also drop the
+        // memory, or the next READY dispatch re-sends it.
+        lastPresence = null
+        Timber.tag(tag).d("clearPresence: lastPresence cleared (no stale re-send on reconnect)")
     }
 
     private suspend inline fun <reified T> send(op: OpCode, d: T?) {
