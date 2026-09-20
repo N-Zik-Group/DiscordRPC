@@ -10,10 +10,12 @@ import com.metrolist.music.discordrpc.entities.Presence
 import com.metrolist.music.discordrpc.entities.Ready
 import com.metrolist.music.discordrpc.entities.Resume
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.ResponseException
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.header
+import io.ktor.http.HttpHeaders
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
@@ -23,7 +25,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
@@ -32,23 +37,27 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import timber.log.Timber
 import java.util.Locale
+import kotlin.random.Random
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import android.os.Build
 
-class GatewayWebSocket(
+// open: the module's unit tests subclass it with a recording/fake gateway (see
+// DiscordRpcConnectionStaleGuardTest) without pulling in a mocking framework.
+open class GatewayWebSocket(
     private val token: String,
     private val os: String,
     private val browser: String,
     private val device: String,
+    private val gatewayUrl: String = GATEWAY_URL,
+    private val clientFactory: () -> HttpClient = { HttpClient { install(WebSockets) } },
 ) : CoroutineScope {
     private val job = SupervisorJob()
     override val coroutineContext = job + DiscordRpc.backgroundDispatcher + gatewayExceptionHandler
     private val tag = "DiscordGateway"
 
-    private val client = HttpClient {
-        install(WebSockets)
-    }
+    private val client = clientFactory()
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -69,9 +78,27 @@ class GatewayWebSocket(
     private var heartbeatWatchdogJob: Job? = null
     private var lastPresence: Presence? = null
 
-    fun isSessionEstablished(): Boolean = sessionEstablished
+    private val _reconnectAbandoned = MutableStateFlow(false)
 
+    /** True once the gateway gave up retrying (see [MAX_RECONNECT_ATTEMPTS]). */
+    val reconnectAbandoned: StateFlow<Boolean> = _reconnectAbandoned
+
+    /** Consecutive failed automatic reconnections; exposed for tests. */
+    internal var reconnectAttempts = 0
+
+    open fun isSessionEstablished(): Boolean = sessionEstablished
+
+    /**
+     * Manual connection request (app-level: user reconnect, next setActivity after a
+     * disconnect). Resets the reconnection budget so a fresh attempt cycle starts.
+     */
     fun connect() {
+        reconnectAttempts = 0
+        _reconnectAbandoned.update { false }
+        connectInternal()
+    }
+
+    private fun connectInternal() {
         if (connected) {
             Timber.tag(tag).d("connect() called but already connected")
             return
@@ -94,7 +121,7 @@ class GatewayWebSocket(
     }
 
     private suspend fun establishConnection() {
-        val url = resumeUrl ?: GATEWAY_URL
+        val url = resumeUrl ?: gatewayUrl
         val systemLocale = Locale.getDefault().toString().replace('_', '-')
         Timber.tag(tag).d("establishConnection: url=$url locale=$systemLocale")
 
@@ -103,6 +130,15 @@ class GatewayWebSocket(
                 header("User-Agent", USER_AGENT)
                 header("Accept-Language", systemLocale)
             }
+        } catch (e: ResponseException) {
+            // The gateway rate-limits the upgrade with 429 + a Retry-After header (upstream
+            // parity: DiscordGateway.onFailure reads the header, parseRetryAfter() the delay).
+            val status = e.response.status.value
+            val retryAfterSeconds = e.response.headers[HttpHeaders.RetryAfter]?.toLongOrNull()
+            Timber.tag(tag).e(e, "WebSocket upgrade rejected: HTTP $status on $url, retryAfter=${retryAfterSeconds}s")
+            connected = false
+            scheduleReconnection(rateLimited = status == 429, retryAfterSeconds = retryAfterSeconds)
+            return
         } catch (e: Exception) {
             Timber.tag(tag).e(e, "WebSocket connection failed to $url")
             connected = false
@@ -111,6 +147,8 @@ class GatewayWebSocket(
 
         connected = true
         currentReconnectDelay = INITIAL_RECONNECT_DELAY
+        reconnectAttempts = 0
+        _reconnectAbandoned.update { false }
         Timber.tag(tag).i("WebSocket connected to $url")
 
         try {
@@ -249,8 +287,21 @@ class GatewayWebSocket(
         Timber.tag(tag).w("Disconnected: code=$code reason=$message")
 
         when {
+            code == 1000 -> {
+                // Clean remote close: the session is over on purpose — reset and stay offline
+                // (upstream parity: handleClose code 1000 && remote). A manual connect() or the
+                // next setActivity re-establishes the connection.
+                Timber.tag(tag).i("Clean remote close (1000) — resetting session, no reconnect")
+                sessionId = null
+                sequence = 0
+                resumeUrl = null
+            }
             code == 4004 -> {
                 Timber.tag(tag).e("Token invalid (4004) — will not reconnect")
+            }
+            !reconnectsOnClose(code) -> {
+                // 4014 (invalid shard — upstream SurfaceFatal) and any other terminal code.
+                Timber.tag(tag).e("Close code $code — fatal, will not reconnect")
             }
             code == 4006 || code == 4008 -> {
                 Timber.tag(tag).i("Session invalidated ($code), clearing state and reconnecting")
@@ -261,8 +312,11 @@ class GatewayWebSocket(
             }
             code == 4000 -> {
                 Timber.tag(tag).d("Close code 4000 — immediate reconnect")
-                delay(200.milliseconds)
-                connect()
+                if (beginReconnectionAttempt()) {
+                    delay(200.milliseconds)
+                    // Automatic reconnect: must NOT reset the budget (see connect()).
+                    connectInternal()
+                }
             }
             else -> {
                 Timber.tag(tag).d("Close code $code — scheduling reconnection")
@@ -337,22 +391,77 @@ class GatewayWebSocket(
         }
     }
 
-    private fun scheduleReconnection() {
+    /**
+     * Counts one automatic reconnection attempt against [MAX_RECONNECT_ATTEMPTS].
+     * Returns false — and marks the gateway abandoned — once the budget is spent,
+     * so a flapping network can never produce an unbounded reconnect loop.
+     */
+    private fun beginReconnectionAttempt(): Boolean {
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            if (!_reconnectAbandoned.value) {
+                Timber.tag(tag).e("Reconnection abandoned after $reconnectAttempts attempts — RPC stays offline until a manual connect()")
+                _reconnectAbandoned.update { true }
+            }
+            return false
+        }
+        reconnectAttempts += 1
+        return true
+    }
+
+    private fun scheduleReconnection(rateLimited: Boolean = false, retryAfterSeconds: Long? = null) {
         if (intentionalClose) {
             Timber.tag(tag).d("scheduleReconnection: intentionalClose=true, skipping")
             return
         }
-        Timber.tag(tag).d("scheduleReconnection: delay=${currentReconnectDelay.inWholeSeconds}s")
+        if (!beginReconnectionAttempt()) return
+        val delay = reconnectDelayFor(rateLimited, retryAfterSeconds, currentReconnectDelay)
+        Timber.tag(tag).d("scheduleReconnection: delay=${delay.inWholeSeconds}s attempt=$reconnectAttempts rateLimited=$rateLimited")
         reconnectionJob?.cancel()
         reconnectionJob = launch {
-            delay(currentReconnectDelay)
+            delay(delay)
             currentReconnectDelay = (currentReconnectDelay * 2).coerceAtMost(MAX_RECONNECT_DELAY)
             Timber.tag(tag).d("Reconnection delay elapsed, calling connect()")
-            connect()
+            // Automatic reconnect: must NOT reset the budget (see connect()).
+            connectInternal()
         }
     }
 
-    suspend fun updatePresence(presence: Presence) {
+    /**
+     * Delay before the next reconnection attempt (upstream parity: DiscordGateway.reconnectDelayMs
+     * + parseRetryAfter): a 429 rate-limited close waits the imposed Retry-After, never below 60 s;
+     * any other failure uses the current exponential backoff with ±25 % jitter. Pure, exposed for
+     * unit tests.
+     */
+    internal fun reconnectDelayFor(rateLimited: Boolean, retryAfterSeconds: Long?, currentDelay: Duration): Duration =
+        when {
+            rateLimited ->
+                ((retryAfterSeconds ?: MIN_RATE_LIMIT_DELAY_SECONDS).coerceAtLeast(MIN_RATE_LIMIT_DELAY_SECONDS) * 1000L).milliseconds
+            else -> applyJitter(currentDelay)
+        }
+
+    /**
+     * ±[ratio] jitter on a delay (upstream parity: DiscordGateway.applyJitter with ratio 0.25 on
+     * the reconnect backoff) — de-synchronizes reconnects so a fleet of devices does not retry on
+     * the same tick.
+     */
+    internal fun applyJitter(base: Duration, ratio: Double = RECONNECT_JITTER): Duration {
+        val ms = base.inWholeMilliseconds
+        if (ms <= 0L) return base
+        val delta = (ms * ratio).toLong()
+        if (delta <= 0L) return base
+        val offset = Random.nextLong(delta + 1)
+        return (ms + if (Random.nextBoolean()) offset else -offset).coerceAtLeast(0).milliseconds
+    }
+
+    /**
+     * Which close codes allow an automatic reconnection (upstream parity:
+     * DiscordReconnectStrategy.decide, minus the OAuth refresh actions this fork never had).
+     * 1000 (clean remote close), 4004 (invalid token), 4014 (invalid shard) are terminal.
+     * Pure, exposed for unit tests; handleDisconnect() is built on the same table.
+     */
+    internal fun reconnectsOnClose(code: Int): Boolean = code !in setOf(1000, 4004, 4014)
+
+    open suspend fun updatePresence(presence: Presence, staleCheck: (() -> Boolean)? = null) {
         Timber.tag(tag).d("updatePresence: waiting for sessionEstablished...")
         val startTime = System.currentTimeMillis()
         var waited = 0L
@@ -363,6 +472,13 @@ class GatewayWebSocket(
                 Timber.tag(tag).w("updatePresence: timed out waiting for session (30s)")
                 return
             }
+        }
+        // The wait above can take up to 30s: re-validate staleness right before
+        // writing, not only at the call site, or a superseded presence could still
+        // land after a newer activity/clear arrived during the wait.
+        if (staleCheck != null && !staleCheck()) {
+            Timber.tag(tag).w("updatePresence: superseded while waiting for session — skipping")
+            return
         }
         Timber.tag(tag).d("updatePresence: session ready after ${System.currentTimeMillis() - startTime}ms")
         lastPresence = presence
@@ -377,7 +493,7 @@ class GatewayWebSocket(
         send(op = OpCode.PRESENCE_UPDATE, d = presence)
     }
 
-    suspend fun clearPresence() {
+    open suspend fun clearPresence() {
         if (sessionEstablished) {
             Timber.tag(tag).i("-> PRESENCE_UPDATE (clearing)")
             send(
@@ -418,6 +534,10 @@ class GatewayWebSocket(
             try {
                 session?.close()
             } catch (_: Exception) { }
+            // Release the client only after the session close handshake: its engine (OkHttp
+            // dispatcher + connection pool) hosts the socket, and shutting it down first would
+            // drop the close frame. Upstream parity: DiscordGateway.closeHttp().
+            client.close()
         }
         connected = false
         sessionEstablished = false
@@ -433,5 +553,14 @@ class GatewayWebSocket(
 
         private val INITIAL_RECONNECT_DELAY = 1.seconds
         private val MAX_RECONNECT_DELAY = 60.seconds
+
+        /** Automatic reconnections allowed before the gateway gives up (upstream parity). */
+        internal const val MAX_RECONNECT_ATTEMPTS = 7
+
+        /** ±25 % jitter on the reconnect backoff (upstream parity: applyJitter(base, 0.25)). */
+        internal const val RECONNECT_JITTER = 0.25
+
+        /** A 429 without a usable Retry-After waits at least this long (upstream parity: 60 s floor). */
+        private const val MIN_RATE_LIMIT_DELAY_SECONDS = 60L
     }
 }

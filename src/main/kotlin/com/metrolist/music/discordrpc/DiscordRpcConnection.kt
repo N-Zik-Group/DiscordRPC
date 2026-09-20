@@ -17,9 +17,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import timber.log.Timber
+import java.util.concurrent.atomic.AtomicLong
 
 enum class ActivityType(val value: Int) {
     PLAYING(0),
@@ -36,13 +38,28 @@ class DiscordRpcConnection(
     device: String = "Generic Android Device",
     private val userAgent: String = "Discord-Android/314013;RNA",
     private val superPropertiesBase64: String? = null,
+    private val gatewayFactory: (String, String, String, String) -> GatewayWebSocket = { t, o, b, d ->
+        GatewayWebSocket(t, o, b, d)
+    },
 ) {
     private val tag = "DiscordRpc"
-    private val gateway = GatewayWebSocket(token, os, browser, device)
+    private val gateway = gatewayFactory(token, os, browser, device)
     private val httpClient = HttpClient()
     private val httpScope = CoroutineScope(SupervisorJob() + DiscordRpc.backgroundDispatcher + httpScopeExceptionHandler)
     private var lastUpdateTime = 0L
     private val minUpdateInterval = 500L // Minimum 500ms between updates
+
+    /**
+     * Monotonic id of the most recent activity write request. A [setActivity] call captures
+     * its id on entry and re-checks it right before writing: a newer [setActivity] or
+     * [clearActivity] (song skip, browsing clear) bumps the id, so the superseded call is
+     * dropped instead of re-sending a stale activity after its image-resolution/network wait.
+     */
+    private val activityId = AtomicLong(0)
+
+    /** True once the underlying gateway gave up retrying (see GatewayWebSocket.MAX_RECONNECT_ATTEMPTS). */
+    val reconnectAbandoned: StateFlow<Boolean>
+        get() = gateway.reconnectAbandoned
 
     fun isRunning(): Boolean = gateway.isSessionEstablished()
 
@@ -66,6 +83,7 @@ class DiscordRpcConnection(
         since: Long? = null,
         applicationId: String? = null,
     ) {
+        val expectedActivityId = activityId.incrementAndGet()
         val currentTime = System.currentTimeMillis()
         val elapsed = currentTime - lastUpdateTime
         if (elapsed < minUpdateInterval) {
@@ -99,6 +117,13 @@ class DiscordRpcConnection(
         
         Timber.tag(tag).d("Image resolution took ${System.currentTimeMillis() - startTime}ms")
 
+        // A newer setActivity/clearActivity bumped the id while this call was waiting on
+        // image resolution — the newer write wins, drop this stale one.
+        if (expectedActivityId != activityId.get()) {
+            Timber.tag(tag).w("setActivity: superseded (expected=$expectedActivityId current=${activityId.get()}), skipping")
+            return
+        }
+
         val buttonLabels = buttons?.map { it.label }?.takeIf { it.isNotEmpty() }
         val buttonUrls = buttons?.map { it.url }?.takeIf { it.isNotEmpty() }
 
@@ -129,11 +154,15 @@ class DiscordRpcConnection(
                 status = status,
                 afk = false,
             ),
+            staleCheck = { expectedActivityId == activityId.get() },
         )
         Timber.tag(tag).i("setActivity completed in ${System.currentTimeMillis() - startTime}ms")
     }
 
     suspend fun clearActivity(status: String = "online") {
+        // Bump the id so any setActivity still in flight (image resolution, session wait)
+        // is dropped when it resumes — a clear must always win over stale writes.
+        activityId.incrementAndGet()
         if (isRunning()) {
             Timber.tag(tag).i("Clearing activity")
             gateway.clearPresence()
@@ -150,6 +179,8 @@ class DiscordRpcConnection(
 
     fun closeDirect() {
         Timber.tag(tag).i("closeDirect() called")
+        // No clearPresence here (session may be down), but still invalidate in-flight writes.
+        activityId.incrementAndGet()
         gateway.close()
         httpScope.cancel()
         httpClient.close()
