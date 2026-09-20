@@ -18,6 +18,7 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -42,7 +43,7 @@ class GatewayWebSocket(
     private val device: String,
 ) : CoroutineScope {
     private val job = SupervisorJob()
-    override val coroutineContext = job + DiscordRpc.backgroundDispatcher
+    override val coroutineContext = job + DiscordRpc.backgroundDispatcher + gatewayExceptionHandler
     private val tag = "DiscordGateway"
 
     private val client = HttpClient {
@@ -418,6 +419,10 @@ class GatewayWebSocket(
     companion object {
         private const val GATEWAY_URL = "wss://gateway.discord.gg/?v=9&encoding=json"
         private const val USER_AGENT = "Discord-Android/314013;RNA"
+
+        internal val gatewayExceptionHandler = CoroutineExceptionHandler { _, e ->
+            Timber.tag("DiscordGateway").e(e, "GatewayWebSocket scope coroutine failed")
+        }
 
         private val INITIAL_RECONNECT_DELAY = 1.seconds
         private val MAX_RECONNECT_DELAY = 60.seconds
