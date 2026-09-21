@@ -203,6 +203,15 @@ class DiscordRpcConnection(
                 return@launch
             }
 
+            // Upstream parity (RM:386-389): no image could be resolved (the upload failed
+            // — deliberately NOT cached) → keep the phase-1 text-only presence and skip
+            // the phase-2 re-send entirely; the next update retries the upload (cache
+            // miss). A raw http URL is never sent as an asset — Discord cannot render it.
+            if (resolvedLargeImage == null && resolvedSmallImage == null) {
+                Timber.tag(tag).w("setActivity: image upload failed — keeping the text-only presence, retrying on the next update")
+                return@launch
+            }
+
             sendPresence(
                 name = name,
                 type = type,
@@ -341,9 +350,15 @@ class DiscordRpcConnection(
                     if (asset != null) {
                         Timber.tag(tag).i("External asset uploaded: $image -> $asset")
                     } else {
-                        Timber.tag(tag).w("External asset upload failed for: $image, using raw URL")
+                        // A failed upload must NOT fall back to the raw URL: the raw URL
+                        // is not renderable by Discord, and getOrFetch would CACHE it —
+                        // poisoning the resolution for this artwork forever (the image
+                        // would stay dead until a token change / connection recreation).
+                        // Null keeps the phase-1 text-only presence; the next update
+                        // retries the upload (cache miss).
+                        Timber.tag(tag).w("External asset upload failed for: $image — not cached, retrying on the next update")
                     }
-                    asset ?: image
+                    asset
                 }
             }
         } else {

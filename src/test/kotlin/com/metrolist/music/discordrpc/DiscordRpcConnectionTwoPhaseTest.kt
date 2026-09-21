@@ -129,6 +129,50 @@ class DiscordRpcConnectionTwoPhaseTest {
         }
     }
 
+    /**
+     * Failed-upload regression: a failed upload must NOT fall back to the raw URL (Discord
+     * cannot render it) and must NOT be cached (a cached raw URL would poison the
+     * resolution for this artwork forever — the image stays dead until a token change).
+     * The phase-1 text-only presence stays; the next update (the app's 5 s tick) retries
+     * the upload on a cache miss and the presence then carries the image.
+     */
+    @Test
+    fun `a failed upload is not cached and the next update retries it`() = runTest {
+        val previous = DiscordRpc.backgroundDispatcher
+        DiscordRpc.backgroundDispatcher = UnconfinedTestDispatcher(testScheduler)
+        try {
+            ArtworkCache.clear()
+            val fake = RecordingGateway()
+            var attempts = 0
+            // The first upload fails (429 / network hiccup), the retry succeeds.
+            val connection = connectionWith(fake) {
+                attempts++
+                if (attempts == 1) null else "mp:ok"
+            }
+
+            connection.setActivity(name = "Song A", largeImage = "http://img.example/a.png")
+            testScheduler.runCurrent()
+            assertEquals(1, fake.presences.size, "the failed upload must leave only the phase-1 text-only presence")
+            assertNull(activityOf(0, fake.presences).assets, "no raw URL may be sent as an asset on failure")
+            assertEquals(0, ArtworkCache.size, "a failed upload must NOT be cached (no raw-URL poisoning)")
+
+            // The next update (the app's 5 s refresh tick on the same artwork) must RETRY
+            // the upload — a cache miss.
+            connection.setActivity(name = "Song A", largeImage = "http://img.example/a.png", details = "t5")
+            testScheduler.advanceTimeBy(500) // setActivity's 500 ms limit (virtual time)
+            testScheduler.runCurrent()
+            assertEquals(2, attempts, "the failed upload must be retried on the next update")
+            assertEquals(1, ArtworkCache.size, "the retry's successful upload must be cached")
+            assertTrue(
+                fake.presences.any { it.activities.any { a -> a.assets?.largeImage == "mp:ok" } },
+                "the presence must carry the image once the upload succeeds",
+            )
+            connection.closeDirect()
+        } finally {
+            DiscordRpc.backgroundDispatcher = previous
+        }
+    }
+
     @Test
     fun `a newer setActivity cancels the in-flight image resolution`() = runTest {
         val previous = DiscordRpc.backgroundDispatcher
