@@ -18,4 +18,13 @@ object DiscordRpc {
 
     @Volatile
     var backgroundDispatcher: CoroutineDispatcher = Dispatchers.IO
+
+    /**
+     * Application id used by BOTH the RPC activity payload (`application_id`) and the
+     * external-assets upload (`POST /api/v9/applications/{id}/external-assets`). Single
+     * source for the whole module and its host app (item 11 — the two historical ids,
+     * 1411019391843172514 in the module and 1379051016007454760 in the app, are unified
+     * on the user-facing app id).
+     */
+    const val APPLICATION_ID = "1379051016007454760"
 }

@@ -12,6 +12,14 @@ configure<com.android.build.api.dsl.LibraryExtension> {
         minSdk = 24
     }
 
+    buildTypes {
+        release {
+            // Item 16: keep the module's public API stable through the host app's
+            // R8/ProGuard minification.
+            consumerProguardFiles("consumer-rules.pro")
+        }
+    }
+
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_21

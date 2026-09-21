@@ -41,6 +41,7 @@ import java.util.Collections
 import java.util.Locale
 import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.abs
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -112,6 +113,26 @@ open class GatewayWebSocket(
     /** True once the gateway gave up retrying (see [MAX_RECONNECT_ATTEMPTS]). */
     val reconnectAbandoned: StateFlow<Boolean> = _reconnectAbandoned
 
+    private val _terminalCloseCode = MutableStateFlow<Int?>(null)
+
+    /**
+     * Terminal close code that ended the session (currently only 4004 — invalid token), or
+     * null when none is pending. Cleared by a manual [connect] so a fresh attempt starts
+     * from a clean slate (item 9: the app surfaces this as a durable error banner).
+     */
+    val terminalCloseCode: StateFlow<Int?> = _terminalCloseCode
+
+    /**
+     * Generation counter of the connection attempts (upstream parity:
+     * DiscordGateway.activeWebSocketId). Each attempt claims a generation in
+     * [connectInternal] before opening the socket; the receive loop, [handleDisconnect]
+     * and the attempt's failure handler only act while that generation is still the
+     * active one, so a close event from a session that has already been superseded
+     * (reconnection) or invalidated ([close]) is ignored instead of resetting the live
+     * session's state or scheduling a ghost reconnection.
+     */
+    private val sessionGeneration = AtomicInteger(0)
+
     /**
      * Consecutive failed automatic reconnections. Atomic: [connect] is called from the
      * app's threads while the reconnection loop runs on [DiscordRpc.backgroundDispatcher],
@@ -153,6 +174,7 @@ open class GatewayWebSocket(
     fun connect() {
         reconnectAttemptsCounter.set(0)
         _reconnectAbandoned.update { false }
+        _terminalCloseCode.update { null }
         connectInternal()
     }
 
@@ -171,23 +193,41 @@ open class GatewayWebSocket(
         }
         Timber.tag(tag).i("Connecting to Gateway...")
         intentionalClose = false
+        // Claim this attempt's generation (upstream parity: a fresh activeWebSocketId per
+        // connection) before anything else, so a session opened after close() or after a
+        // competing connection is born stale — and a superseded attempt can detect it.
+        val generation = sessionGeneration.incrementAndGet()
+        // A superseded live session's heartbeat/watchdog must not keep firing against the
+        // replacement socket before its own HELLO: its handleDisconnect returns early on
+        // the stale-generation guard and would never cancel them (they are siblings of the
+        // scope, not children of the superseded attempt).
+        heartbeatJob?.cancel()
+        heartbeatWatchdogJob?.cancel()
         reconnectionJob?.cancel()
         reconnectionJob = launch {
             try {
-                establishConnection()
+                establishConnection(generation)
             } catch (e: Exception) {
-                Timber.tag(tag).e(e, "establishConnection() threw unhandled exception")
-                scheduleReconnection()
+                // A superseded attempt (cancelled by a newer connect()/close() while
+                // parked or in flight) must NOT schedule a reconnection: its backoff job
+                // would cancel the live session's job and cascade into false abandonments
+                // (upstream parity: only the active generation reconnects).
+                if (generation == sessionGeneration.get()) {
+                    Timber.tag(tag).e(e, "establishConnection() threw unhandled exception")
+                    scheduleReconnection()
+                } else {
+                    Timber.tag(tag).w("Superseded attempt (generation=$generation, active=${sessionGeneration.get()}) — not scheduling a reconnection")
+                }
             }
         }
     }
 
-    private suspend fun establishConnection() {
+    private suspend fun establishConnection(generation: Int) {
         val url = resumeUrl ?: gatewayUrl
         val systemLocale = Locale.getDefault().toString().replace('_', '-')
-        Timber.tag(tag).d("establishConnection: url=$url locale=$systemLocale")
+        Timber.tag(tag).d("establishConnection: url=$url locale=$systemLocale generation=$generation")
 
-        session = try {
+        val ws = try {
             client.webSocketSession(url) {
                 header("User-Agent", USER_AGENT)
                 header("Accept-Language", systemLocale)
@@ -211,6 +251,15 @@ open class GatewayWebSocket(
             throw e
         }
 
+        // Upstream parity (DiscordGateway.onOpen L172): only a session whose generation is
+        // still the active one becomes THE session; a superseded one is closed and ignored.
+        if (generation != sessionGeneration.get()) {
+            Timber.tag(tag).w("Session opened but already superseded (generation=$generation, active=${sessionGeneration.get()}) — dropping it")
+            runCatching { ws.close(CloseReason(1000, "Superseded")) }
+            return
+        }
+
+        session = ws
         connected = true
         currentReconnectDelay = INITIAL_RECONNECT_DELAY
         reconnectAttemptsCounter.set(0)
@@ -218,7 +267,14 @@ open class GatewayWebSocket(
         Timber.tag(tag).i("WebSocket connected to $url")
 
         try {
-            session!!.incoming.receiveAsFlow().collect { frame ->
+            ws.incoming.receiveAsFlow().collect { frame ->
+                // Stale-frame guard: a frame delivered from a session that has already been
+                // superseded by a newer connection must not be processed (upstream parity:
+                // onMessage checks wsId == activeWebSocketId).
+                if (generation != sessionGeneration.get()) {
+                    Timber.tag(tag).w("Ignoring frame from stale session (generation=$generation, active=${sessionGeneration.get()})")
+                    return@collect
+                }
                 when (frame) {
                     is Frame.Text -> {
                         val text = frame.readText()
@@ -240,12 +296,18 @@ open class GatewayWebSocket(
 
         if (!intentionalClose) {
             Timber.tag(tag).d("WebSocket receive flow ended normally, handling disconnect")
-            handleDisconnect()
+            handleDisconnect(generation, ws)
         }
     }
 
     private suspend fun handlePayload(payload: Payload) {
-        payload.s?.let { sequence = it }
+        // Sequence guard (upstream parity: handleFrame L241-244): only a non-zero sequence
+        // advances the counter — an `s: 0` payload must never reset it, or RESUME would
+        // replay with seq 0 and the heartbeat would send `d: null` mid-session.
+        val s = payload.s
+        if (s != null && s > 0) {
+            sequence = s
+        }
 
         when (payload.op) {
             OpCode.DISPATCH -> {
@@ -261,8 +323,8 @@ open class GatewayWebSocket(
                 handleReconnect()
             }
             OpCode.INVALID_SESSION -> {
-                val canResume = payload.d?.let { json.decodeFromJsonElement<Boolean>(it) } ?: false
-                Timber.tag(tag).w("<- INVALID_SESSION | canResume=$canResume")
+                // canResume is decoded once, in handleInvalidSession (single-decode cleanup).
+                Timber.tag(tag).w("<- INVALID_SESSION")
                 handleInvalidSession(payload)
             }
             OpCode.HELLO -> {
@@ -284,19 +346,29 @@ open class GatewayWebSocket(
         heartbeatInterval = hello.heartbeatInterval
         Timber.tag(tag).i("HELLO: heartbeat_interval=${heartbeatInterval}ms")
 
-        val jitter = (0..<heartbeatInterval).random()
-        Timber.tag(tag).d("First heartbeat with jitter=${jitter}ms")
-        delay(jitter)
-        sendHeartbeat()
-        startHeartbeatLoop()
-        startHeartbeatWatchdog()
-
         if (sessionId != null && sequence > 0) {
+            // Resume: keep the upstream order (jittered first heartbeat, then RESUME).
+            val jitter = (0..<heartbeatInterval).random()
+            Timber.tag(tag).d("First heartbeat with jitter=${jitter}ms")
+            delay(jitter)
+            sendHeartbeat()
+            startHeartbeatLoop()
+            startHeartbeatWatchdog()
             Timber.tag(tag).i("Resuming session: sessionId=$sessionId seq=$sequence")
             sendResume(sessionId!!)
         } else {
+            // Fresh session: no jitter on the first heartbeat. The gateway only completes
+            // the identify (READY) once it has received the first heartbeat, so parking
+            // it behind the full HELLO jitter (up to heartbeat_interval, ~42 s) delayed
+            // READY — and with it the first presence update — by the same amount. The
+            // server answers the early heartbeat with a HEARTBEAT_ACK as usual; the loop
+            // below keeps the jittered interval.
             Timber.tag(tag).i("Sending Identify (fresh session)")
             sendIdentify()
+            Timber.tag(tag).d("First heartbeat sent immediately (no jitter)")
+            sendHeartbeat()
+            startHeartbeatLoop()
+            startHeartbeatWatchdog()
         }
     }
 
@@ -305,7 +377,9 @@ open class GatewayWebSocket(
             "READY" -> {
                 val ready = json.decodeFromJsonElement<Ready>(payload.d!!)
                 sessionId = ready.sessionId
-                resumeUrl = ready.resumeGatewayUrl?.let { "$it/?v=9&encoding=json" }
+                // Upstream parity: the resume URL is used as-is (no query rewrite) — the
+                // gateway's v=10 URL already carries the encoding params.
+                resumeUrl = ready.resumeGatewayUrl
                 sessionEstablished = true
                 Timber.tag(tag).i("READY received")
                 resendLastPresence()
@@ -327,27 +401,39 @@ open class GatewayWebSocket(
 
     private suspend fun handleInvalidSession(payload: Payload) {
         val canResume = payload.d?.let { json.decodeFromJsonElement<Boolean>(it) } ?: false
-        val sid = sessionId
-        delay(1500)
-        if (canResume && sid != null) {
-            Timber.tag(tag).i("INVALID_SESSION: can resume, sending Resume")
-            sendResume(sid)
-        } else {
-            Timber.tag(tag).i("INVALID_SESSION: cannot resume, sending fresh Identify")
+        Timber.tag(tag).w("<- INVALID_SESSION | canResume=$canResume")
+        if (!canResume) {
+            // Reset before the close so the reconnection on the fresh socket identifies
+            // instead of resuming a dead session (upstream parity: L284-289).
+            Timber.tag(tag).i("INVALID_SESSION: cannot resume — resetting session state")
             sessionId = null
             sequence = 0
             resumeUrl = null
             sessionEstablished = false
-            sendIdentify()
+        } else {
+            Timber.tag(tag).i("INVALID_SESSION: resumable — state kept for the resume on the fresh socket")
         }
+        // Always close with 4000 (upstream parity: L291, in both cases) — no resume/identify
+        // in situ on an invalidated socket. The reconnect flows through the existing 4000
+        // path on a NEW socket: resume if session+seq>0, identify otherwise.
+        session?.close(CloseReason(4000, "Invalid session"))
     }
 
-    private suspend fun handleDisconnect() {
+    private suspend fun handleDisconnect(generation: Int, ws: DefaultClientWebSocketSession) {
+        // Stale-close guard (upstream parity: handleClose L306-313): a close event from a
+        // session that is no longer the active one (superseded by a reconnection, or the
+        // gateway was closed) must not reset the live session's state or trigger anything.
+        if (generation != sessionGeneration.get()) {
+            Timber.tag(tag).w("Ignoring stale disconnect (generation=$generation, active=${sessionGeneration.get()})")
+            return
+        }
         heartbeatJob?.cancel()
         heartbeatWatchdogJob?.cancel()
         connected = false
         sessionEstablished = false
-        val reason = session?.closeReason?.await()
+        // Read the close reason from the session that actually closed, not from `session`
+        // (which may already point at the replacement session of a newer connection).
+        val reason = ws.closeReason.await()
         val code = reason?.code?.toInt() ?: -1
         val message = reason?.message ?: "unknown"
         Timber.tag(tag).w("Disconnected: code=$code reason=$message")
@@ -364,6 +450,13 @@ open class GatewayWebSocket(
             }
             code == 4004 -> {
                 Timber.tag(tag).e("Token invalid (4004) — will not reconnect")
+                // Surface the terminal error (item 9) and reset the session state: without
+                // the reset, a later connect() would reuse the stale resumeUrl and send an
+                // obsolete RESUME (L294-300 equivalent) for a dead token.
+                _terminalCloseCode.update { 4004 }
+                sessionId = null
+                sequence = 0
+                resumeUrl = null
             }
             !reconnectsOnClose(code) -> {
                 // 4014 (invalid shard — upstream SurfaceFatal) and any other terminal code.
@@ -431,11 +524,16 @@ open class GatewayWebSocket(
 
     private fun startHeartbeatLoop() {
         heartbeatJob?.cancel()
+        // Computed once per session: the jittered interval is stable for the whole loop
+        // (upstream parity: startHeartbeat L406/L412 — a single applyJitter result reused
+        // at every tick), which de-synchronizes the fleet's heartbeats without drifting
+        // the per-session cadence.
+        val jitteredInterval = applyHeartbeatJitter(heartbeatInterval)
         heartbeatJob = launch {
-            Timber.tag(tag).d("Heartbeat loop started (interval=${heartbeatInterval}ms)")
+            Timber.tag(tag).d("Heartbeat loop started (interval=${heartbeatInterval}ms, jittered=${jitteredInterval}ms)")
             lastHeartbeatAckReceivedAt = System.currentTimeMillis()
             while (isActive) {
-                delay(heartbeatInterval)
+                delay(jitteredInterval)
                 sendHeartbeat()
             }
             Timber.tag(tag).d("Heartbeat loop ended")
@@ -520,6 +618,20 @@ open class GatewayWebSocket(
     }
 
     /**
+     * ±[ratio] jitter on the heartbeat interval (upstream parity: DiscordGateway.applyJitter
+     * L481-488 with JITTER_RATIO 0.05, L406). Computed once per session by
+     * [startHeartbeatLoop] and reused at every tick. Pure, exposed for unit tests.
+     */
+    internal fun applyHeartbeatJitter(interval: Long, ratio: Double = HEARTBEAT_JITTER): Long {
+        if (interval <= 0L) return interval
+        val delta = (interval * ratio).toLong()
+        if (delta <= 0L) return interval
+        val offset = abs(Random.nextLong(delta + 1))
+        val sign = if (Random.nextBoolean()) -1L else 1L
+        return interval + sign * offset
+    }
+
+    /**
      * Which close codes allow an automatic reconnection (upstream parity:
      * DiscordReconnectStrategy.decide, minus the OAuth refresh actions this fork never had).
      * 1000 (clean remote close), 4004 (invalid token), 4014 (invalid shard) are terminal.
@@ -553,9 +665,13 @@ open class GatewayWebSocket(
             return
         }
         Timber.tag(tag).d("updatePresence: session ready after ${System.currentTimeMillis() - startTime}ms")
-        lastPresence = presence
-        Timber.tag(tag).i("-> PRESENCE_UPDATE: activities=${presence.activities.size}")
-        send(op = OpCode.PRESENCE_UPDATE, d = presence)
+        // Upstream parity (buildPresenceUpdate since: Long = 0): the presence update always
+        // encodes `since` as 0 — Discord manages the "online since" itself; a null would
+        // serialize as `"since": null` (explicitNulls is on by default) and reset the timer.
+        val presenceToSend = presence.copy(since = presence.since ?: 0L)
+        lastPresence = presenceToSend
+        Timber.tag(tag).i("-> PRESENCE_UPDATE: activities=${presenceToSend.activities.size}")
+        send(op = OpCode.PRESENCE_UPDATE, d = presenceToSend)
         Timber.tag(tag).d("updatePresence: sent in ${System.currentTimeMillis() - startTime}ms")
     }
 
@@ -568,9 +684,11 @@ open class GatewayWebSocket(
     open suspend fun clearPresence() {
         if (sessionEstablished) {
             Timber.tag(tag).i("-> PRESENCE_UPDATE (clearing)")
+            // since = 0 parity: the clearing op 3 carries the same defaults as a normal
+            // presence update (upstream: clear() → buildPresenceUpdate since: 0).
             send(
                 op = OpCode.PRESENCE_UPDATE,
-                d = Presence(activities = emptyList(), since = null, status = "online", afk = false),
+                d = Presence(activities = emptyList(), since = 0L, status = "online", afk = false),
             )
         }
         // Forget the previous presence so a reconnection (READY/RESUMED dispatch)
@@ -603,6 +721,9 @@ open class GatewayWebSocket(
         // this instance must not start attempts against a dead client (they would burn
         // the reconnection budget and flip reconnectAbandoned — a false toast).
         closed = true
+        // Invalidate the active generation: the dying session's close event must be
+        // ignored by handleDisconnect instead of resetting state or scheduling anything.
+        sessionGeneration.incrementAndGet()
         reconnectionJob?.cancel()
         heartbeatJob?.cancel()
         heartbeatWatchdogJob?.cancel()
@@ -620,7 +741,7 @@ open class GatewayWebSocket(
     }
 
     companion object {
-        private const val GATEWAY_URL = "wss://gateway.discord.gg/?v=9&encoding=json"
+        private const val GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
         private const val USER_AGENT = "Discord-Android/314013;RNA"
 
         internal val gatewayExceptionHandler = CoroutineExceptionHandler { _, e ->
@@ -635,6 +756,9 @@ open class GatewayWebSocket(
 
         /** ±25 % jitter on the reconnect backoff (upstream parity: applyJitter(base, 0.25)). */
         internal const val RECONNECT_JITTER = 0.25
+
+        /** ±5 % jitter on the heartbeat interval, computed once per session (upstream parity: JITTER_RATIO 0.05). */
+        internal const val HEARTBEAT_JITTER = 0.05
 
         /** A 429 without a usable Retry-After waits at least this long (upstream parity: 60 s floor). */
         private const val MIN_RATE_LIMIT_DELAY_SECONDS = 60L
