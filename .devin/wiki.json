@@ -1,0 +1,98 @@
+{
+  "repo_notes": [
+    "DiscordRPC-Android is a standalone Discord Rich Presence (RPC) client for Android, written in Kotlin and Ktor.",
+    "Used as a Gradle module (':discordrpc') in the N-Zik app (N-Zik-Group/N-Zik, see settings.gradle.kts).",
+    "Fork of the Discord RPC implementation originally created by MetroList.",
+    "Code lives in src/main/kotlin/com/metrolist/music/discordrpc/ (package kept from the upstream fork); gateway payloads are modeled in the 'entities/' subpackage.",
+    "Key areas: gateway WebSocket connection (handshake, opcodes, heartbeat with jitter, session resume), two-phase connection setup, reconnect policy, Rich Presence (Activity) updates, artwork upload with cache + in-flight dedup.",
+    "Tests live under src/test/kotlin/com/metrolist/music/discordrpc/ and cover connection lifecycle, reconnection, heartbeats, scope handling and artwork upload.",
+    "Tone: technical library documentation for Android/Kotlin contributors."
+  ],
+  "pages": [
+    {
+      "title": "Overview",
+      "page_notes": [
+        {
+          "content": "Introduction: what the library does, where it is used (N-Zik), and its relationship to the MetroList fork."
+        }
+      ]
+    },
+    {
+      "title": "Architecture",
+      "page_notes": [
+        {
+          "content": "Overview of the package layout under com.metrolist.music.discordrpc and the 'entities/' payload models."
+        }
+      ]
+    },
+    {
+      "title": "Connection Lifecycle",
+      "parent": "Architecture",
+      "page_notes": [
+        {
+          "content": "DiscordRpcConnection: two-phase connection setup, stale-session guard, and the public entry points (DiscordRpc.kt)."
+        }
+      ]
+    },
+    {
+      "title": "Gateway WebSocket",
+      "parent": "Architecture",
+      "page_notes": [
+        {
+          "content": "GatewayWebSocket.kt: identify handshake, opcode handling (OpCode, Payload, OpCodeSerializer), READY handling, and close semantics."
+        }
+      ]
+    },
+    {
+      "title": "Heartbeat & Session Resume",
+      "parent": "Gateway WebSocket",
+      "page_notes": [
+        {
+          "content": "Heartbeat scheduling with jitter, HeartbeatResponse, Resume and ClientState for session resumption."
+        }
+      ]
+    },
+    {
+      "title": "Coroutine Scopes & Dispatchers",
+      "parent": "Architecture",
+      "page_notes": [
+        {
+          "content": "Scope handling and background dispatcher usage (DiscordRpcHttpScopeHandler, background dispatcher behavior)."
+        }
+      ]
+    },
+    {
+      "title": "Rich Presence",
+      "page_notes": [
+        {
+          "content": "How Activity, Assets, Metadata, Button, Timestamps and Presence entities are built and sent to Discord."
+        }
+      ]
+    },
+    {
+      "title": "Artwork Upload & Caching",
+      "parent": "Rich Presence",
+      "page_notes": [
+        {
+          "content": "ArtworkCache.kt and ExternalAssets.kt: upload pipeline, in-flight dedup, cache caps, and the no-cache-on-failure rule."
+        }
+      ]
+    },
+    {
+      "title": "Testing Strategy",
+      "page_notes": [
+        {
+          "content": "Coverage of the test suite under src/test/kotlin/: handshake shape, heartbeat jitter, reconnect policy, max attempts, terminal/stale close, upgrade, artwork upload."
+        }
+      ]
+    },
+    {
+      "title": "Integration",
+      "page_notes": [
+        {
+          "content": "Using the library as a Gradle submodule in Android projects (':discordrpc')."
+        }
+      ]
+    }
+  ]
+}
