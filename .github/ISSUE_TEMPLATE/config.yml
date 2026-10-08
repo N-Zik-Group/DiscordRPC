@@ -3,3 +3,6 @@ contact_links:
   - name: 💬 Join the Community (Discord)
     url: https://discord.gg/bneHC7QRje
     about: Ask questions, chat with developers, or report issues that don't fit the templates above.
+  - name: ❓ GitHub Discussions
+    url: https://github.com/N-Zik-Group/N-Zik/discussions
+    about: Use this for Q&A and general ideas that are not yet feature requests.
