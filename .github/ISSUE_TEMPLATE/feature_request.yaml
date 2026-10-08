@@ -1,0 +1,93 @@
+name: 💡 Feature request
+description: Suggest an idea to help us improve DiscordRPC
+title: "[Feature]: "
+labels: ["enhancement"]
+assignees:
+  - NEVARLeVrai
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ****
+        ### 💡 READ BEFORE SUBMITTING 💡
+
+        Thanks for taking the time to suggest an idea for DiscordRPC!
+        In-depth details will help us understand your vision and implement it better.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: 📝 Before submitting
+      description: Please verify the following step before submitting your request.
+      options:
+        - label: I have checked for already existing feature requests.
+          required: true
+
+  - type: checkboxes
+    id: impact-assessment
+    attributes:
+      label: 📊 Impact Assessment
+      description: Would this feature benefit many users or is it a niche use case?
+      options:
+        - label: "This would benefit many users"
+        - label: "This is for a specific/niche use case"
+
+  - type: markdown
+    attributes:
+      value: |
+        ****
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 📱 Context Information (Optional)
+      description: If this request is specific to a certain host app or use case, please specify it here.
+      placeholder: |
+        Host app: e.g. N-Zik
+        Use case: ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: problem-statement
+    attributes:
+      label: 🎯 Problem Statement
+      description: What problem does this feature solve? What's your use case?
+      placeholder: |
+        I want to do '...' because '...', and currently I can only do '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested-solution
+    attributes:
+      label: ✨ Description or Suggested Solution
+      description: Describe the feature/solution you'd like. A clear and concise description of what you want to happen.
+      placeholder: |
+        Add a '...' method so host apps can '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 🔄 Alternatives
+      description: Describe alternatives you've considered. A clear and concise description of any alternative solutions or features you've considered.
+      placeholder: |
+        Currently, I have to '...' which is '...', or use '...' to do the same
+    validations:
+      required: false
+
+  - type: textarea
+    id: related-links
+    attributes:
+      label: 🔗 Related Links & References (Optional)
+      description: Add links to similar features in other libraries, mockups, or any other references that help understand this feature request.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ****
