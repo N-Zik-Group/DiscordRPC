@@ -1,4 +1,6 @@
 <div align="center">
+  <img alt="project's banner" src="https://raw.githubusercontent.com/N-Zik-Group/N-Zik/main/assets/design/ic_banner2.png" width="1080" />
+
   <h1>DiscordRPC-Android</h1>
   <p>
     A standalone Discord Rich Presence (RPC) client for Android, built in Kotlin.
