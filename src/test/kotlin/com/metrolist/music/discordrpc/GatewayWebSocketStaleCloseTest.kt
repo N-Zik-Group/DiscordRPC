@@ -1,5 +1,6 @@
 // The ScriptedEngine below implements ktor's HttpClientEngine, which is @InternalAPI in Ktor 3
 // (engine implementations are an internal extension point). The opt-in is test-only: production
+//
 // code never implements an engine.
 @file:OptIn(InternalAPI::class)
 
@@ -49,6 +50,7 @@ class GatewayWebSocketStaleCloseTest {
     private companion object {
         // heartbeat_interval=1 keeps the HELLO jitter delay at 0 ((0..<1).random() == 0), so a
         // single runCurrent() completes the whole handshake; the watchdog threshold floors at
+        //
         // 10 s and checks real time, so it stays out of every test's window.
         const val HELLO = """{"op":10,"d":{"heartbeat_interval":1}}"""
         const val READY =
@@ -268,6 +270,7 @@ class GatewayWebSocketStaleCloseTest {
 
             // Tear the session down before the test ends: runTest drains the scheduler after
             // the body, and a live heartbeat loop (delay(1) with heartbeat_interval=1) would
+            //
             // spin virtual time forever, filling the unbounded outgoing channel until OOM.
             session.feed(Frame.Close(CloseReason(1000, "Bye")))
             testScheduler.runCurrent()

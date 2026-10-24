@@ -1,5 +1,6 @@
 // The ScriptedEngine below implements ktor's HttpClientEngine, which is @InternalAPI in Ktor 3
 // (engine implementations are an internal extension point). The opt-in is test-only: production
+//
 // code never implements an engine.
 @file:OptIn(InternalAPI::class)
 
@@ -300,6 +301,7 @@ class GatewayWebSocketHandshakeShapeTest {
             lateinit var session: FakeWebSocketSession
             // A real-world interval: with the old jittered first heartbeat the delay would
             // have been up to 45 s, so an op:1 frame at virtual time 0 can only come from
+            //
             // the immediate first heartbeat.
             val helloLong = """{"op":10,"d":{"heartbeat_interval":45000}}"""
             val engine = ScriptedEngine {
@@ -353,6 +355,7 @@ class GatewayWebSocketHandshakeShapeTest {
 
             // Item 19 audit: the fork's production shape — raw token (no "Bearer" prefix,
             // unlike upstream which prefixes at the call site), capabilities 16381,
+            //
             // properties + presence + client_state, and NO intents field.
             assertEquals("raw-token", d["token"]?.jsonPrimitive?.content, "the token must be sent raw, not Bearer-prefixed")
             assertEquals(16381, d["capabilities"]?.jsonPrimitive?.intOrNull, "capabilities must stay 16381")

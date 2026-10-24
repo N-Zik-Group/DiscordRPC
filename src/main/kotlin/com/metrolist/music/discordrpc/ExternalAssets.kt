@@ -42,6 +42,7 @@ suspend fun fetchExternalAsset(
 
     // Cancellable on purpose (upstream parity): the caller's job (the setActivity image
     // resolution, a new event, a clear, a close) owns the cancellation — no NonCancellable
+    //
     // shield, so a cancelled upload never lands in the cache or re-sends a stale presence.
     return try {
         val body = Json.encodeToString(ExternalAssetRequest(urls = listOf(imageUrl)))

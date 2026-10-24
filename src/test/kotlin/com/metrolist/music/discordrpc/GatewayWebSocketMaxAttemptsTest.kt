@@ -55,6 +55,7 @@ class GatewayWebSocketMaxAttemptsTest {
         device = "d",
         // Unreachable loopback URL as a backstop: even if the plugin ever stops
         // intercepting the websocket upgrade request, the attempt still fails fast
+        //
         // instead of dialing the real Discord gateway from a unit test.
         gatewayUrl = "wss://127.0.0.1:1/?v=9&encoding=json",
         clientFactory = { HttpClient { install(WebSockets); install(failingClient) } },
@@ -120,6 +121,7 @@ class GatewayWebSocketMaxAttemptsTest {
 
             // The first failure is delivered from a real dispatcher thread — wait (bounded)
             // for the first automatic retry to be scheduled. No virtual time is advanced
+            //
             // here: advancing it would fire the just-scheduled retry delay prematurely.
             var waited = 0
             while (gateway.reconnectAttempts == 0 && waited < 100) {

@@ -25,6 +25,7 @@ class ArtworkCacheCapTest {
         )
         // Spec constraint: the test asserts the bound only — the eviction order of
         // ConcurrentHashMap.keys is not guaranteed (upstream trimCache parity), so no
+        //
         // specific surviving key is asserted.
     }
 

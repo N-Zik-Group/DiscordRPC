@@ -54,6 +54,7 @@ internal object ArtworkCache {
             } catch (e: CancellationException) {
                 // The owning job went away (supersede / clear / close): the joiners must
                 // not hang on a fetch that will never publish, and the next caller starts
+                //
                 // a FRESH fetch (nothing is cached on cancellation).
                 deferred.cancel(e)
                 throw e

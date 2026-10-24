@@ -292,6 +292,7 @@ class DiscordRpcConnectionTwoPhaseTest {
 
             // Start the newer activity in its own coroutine: its activity id is bumped at
             // entry (before the debounce delay parks it), so by the time the parked second
+            //
             // write resumes it is already superseded. (The test dispatcher resumes eagerly,
             // so the gate must be released only AFTER the id bump.)
             val newer = launch { connection.setActivity(name = "Song B") }
@@ -361,6 +362,7 @@ class DiscordRpcConnectionTwoPhaseTest {
 
             // The slow upload completes: the cache holds the asset and the current tick
             // re-sends phase 2 with the resolved image (the first tick's stale phase-2
+            //
             // send is dropped by the activityId re-check).
             fetchGate.complete(Unit)
             testScheduler.runCurrent()
@@ -559,6 +561,7 @@ class DiscordRpcConnectionTwoPhaseTest {
 
             // The next tick on the same failed song: the stale asset must still be gone —
             // B keeps no A artwork, and B's upload is retried (cache miss) instead of
+            //
             // being skipped by a reused asset.
             val attemptsBefore = attempts
             connection.setActivity(name = "Song B", largeImage = "http://img.example/b.png", details = "t10")

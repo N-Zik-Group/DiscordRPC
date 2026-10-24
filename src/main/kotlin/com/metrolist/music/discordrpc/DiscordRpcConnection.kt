@@ -121,6 +121,7 @@ class DiscordRpcConnection(
         ArtworkCache.clear()
         // The remembered assets belong to the cleared cache's account: a new account
         // must re-upload and must not reuse them in phase 1. Under the pairing lock so
+        //
         // the reset atomically precedes or follows any in-flight phase-2 write-back.
         synchronized(assetLock) {
             lastLargeAsset = null
@@ -171,12 +172,16 @@ class DiscordRpcConnection(
 
         // The app re-sends the SAME artwork every refresh tick (only the timestamps move).
         // When the images are unchanged, reuse the assets a previous successful phase 2
+        //
         // resolved: phase 1 below carries them and phase 2 is skipped entirely, so the
         // presence is sent ONCE — complete — and never drops the artwork between ticks
+        //
         // (the old strip/re-add exchange was the constant flash + image-less fallback).
         // A failed upload was never remembered (null), so its tick still takes the
+        //
         // normal two-phase path and retries the upload. All four last* fields are read
         // under the pairing lock so a concurrent phase-2 write-back can never leave an
+        //
         // asset paired with a different image.
         val sameLargeImage: Boolean
         val sameSmallImage: Boolean
@@ -191,6 +196,7 @@ class DiscordRpcConnection(
 
         // Phase 1 (upstream parity: DiscordRpcManager.setActivity L345-359): send the
         // presence IMMEDIATELY — the activity must never be blocked on image resolution /
+        //
         // the external-assets upload. For a fresh image it is text-only; for an unchanged
         // image it carries the reusable asset so the artwork is never stripped.
         sendPresence(
@@ -212,8 +218,10 @@ class DiscordRpcConnection(
 
         // Cancel the previous in-flight image job when the images actually changed: a
         // superseded upload must not re-send a stale presence. A no-image or different-image
+        //
         // supersede cancels; a same-image supersede (the app refreshes the timestamps on the
         // same artwork every tick) lets the in-flight upload finish so the cache can hold
+        //
         // the asset for the next write. The activityId re-check in the job stays the
         // backstop against a stale second send.
         if (!sameLargeImage || !sameSmallImage) {
@@ -237,6 +245,7 @@ class DiscordRpcConnection(
 
         // Images unchanged and already resolved: phase 1 carried the reusable assets, so
         // phase 2 would only re-resolve (cache hit) and re-send the identical presence.
+        //
         // Skip it — one send per tick, no flash, no redundant gateway traffic.
         if ((largeImage.isNullOrBlank() || reusableLarge != null) &&
             (smallImage.isNullOrBlank() || reusableSmall != null)
@@ -271,10 +280,13 @@ class DiscordRpcConnection(
 
             // Remember what actually resolved (null = failed, deliberately not cached):
             // the next same-image tick reuses these in phase 1 and skips phase 2. The
+            //
             // activity id is re-checked UNDER the pairing lock: a setActivity that bumps
             // the id between the check above and this write must not leave its (different)
+            //
             // image paired with this song's asset — the lock makes the re-check and the
             // write one atomic step against the invalidation in setActivity, so the
+            //
             // pairing can never be poisoned by an interleaving song skip.
             synchronized(assetLock) {
                 if (expectedActivityId != activityId.get()) {
@@ -287,6 +299,7 @@ class DiscordRpcConnection(
 
             // Upstream parity (RM:386-389): no image could be resolved (the upload failed
             // — deliberately NOT cached) → keep the phase-1 text-only presence and skip
+            //
             // the phase-2 re-send entirely; the next update retries the upload (cache
             // miss). A raw http URL is never sent as an asset — Discord cannot render it.
             if (resolvedLargeImage == null && resolvedSmallImage == null) {
@@ -413,8 +426,10 @@ class DiscordRpcConnection(
                     val fetcher = externalAssetFetcher
                     // The seam must distinguish "no fetcher" from "fetcher returned null"
                     // (a failed upload): an elvis fallback would route a null seam result
+                    //
                     // to the real network path. The real upload runs directly in this
                     // resolution job (no sibling scope), so a cancelled resolution cancels
+                    //
                     // the HTTP request as well.
                     val asset = if (fetcher != null) {
                         fetcher(image)
@@ -434,8 +449,10 @@ class DiscordRpcConnection(
                     } else {
                         // A failed upload must NOT fall back to the raw URL: the raw URL
                         // is not renderable by Discord, and getOrFetch would CACHE it —
+                        //
                         // poisoning the resolution for this artwork forever (the image
                         // would stay dead until a token change / connection recreation).
+                        //
                         // Null keeps the phase-1 text-only presence; the next update
                         // retries the upload (cache miss).
                         Timber.tag(tag).w("External asset upload failed for: $image — not cached, retrying on the next update")

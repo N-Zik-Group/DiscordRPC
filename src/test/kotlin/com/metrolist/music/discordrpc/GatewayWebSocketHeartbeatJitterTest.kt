@@ -1,5 +1,6 @@
 // The ScriptedEngine below implements ktor's HttpClientEngine, which is @InternalAPI in Ktor 3
 // (engine implementations are an internal extension point). The opt-in is test-only: production
+//
 // code never implements an engine.
 @file:OptIn(InternalAPI::class)
 
@@ -195,10 +196,13 @@ class GatewayWebSocketHeartbeatJitterTest {
 
             // Collect the first four op:1 frames (the one-shot first heartbeat — sent
             // immediately, without the HELLO jitter — then the loop ticks) with their
+            //
             // virtual timestamps. A constant jittered interval means the loop ticks are
             // exactly equally spaced — re-rolling the jitter per tick would make the
+            //
             // spacing drift. The one-shot frame is drained one ms late (it was written
             // before the collection loop started), so the stability check starts at the
+            //
             // first two loop ticks.
             val ticks = mutableListOf<Long>()
             while (ticks.size < 4) {
