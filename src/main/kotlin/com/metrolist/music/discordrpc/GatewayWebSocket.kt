@@ -47,6 +47,8 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import android.os.Build
+import okhttp3.Protocol
+import okhttp3.Response
 
 // open: the module's unit tests subclass it with a recording/fake gateway (see
 // DiscordRpcConnectionStaleGuardTest) without pulling in a mocking framework.
@@ -59,12 +61,32 @@ open class GatewayWebSocket(
     private val clientFactory: () -> HttpClient = {
         // The default engine (OkHttp) sees the raw upgrade response before Ktor's pipeline
         // turns a refusal into a bare exception that carries no status or headers: record
+        //
         // the refusal so establishConnection() can honor a 429 and its Retry-After
         // (upstream parity: DiscordGateway.onFailure reads both off the OkHttp response).
+        //
         // A default-argument expression cannot reference instance state, so the capture
         // lives on a holder registered in the companion, keyed by the engine config.
         val holder = RefusalHolder()
         val config = OkHttpConfig().apply {
+            // Root-level offline gate (app-wired): short-circuits before the refusal
+            // recorder so an offline upgrade attempt is one clean 503 and the existing
+            //
+            // reconnect handling takes over.
+            addInterceptor { chain ->
+                val gate = offlineGate
+                if (gate != null && !gate()) {
+                    val request = chain.request()
+                    Timber.tag("DiscordGateway").d("offline: short-circuited ${request.method} ${request.url.encodedPath}")
+                    return@addInterceptor Response.Builder()
+                        .request(request)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(503)
+                        .message("No network connection")
+                        .build()
+                }
+                chain.proceed(chain.request())
+            }
             addInterceptor { chain ->
                 val response = chain.proceed(chain.request())
                 if (response.code != 101) {
@@ -195,10 +217,12 @@ open class GatewayWebSocket(
         intentionalClose = false
         // Claim this attempt's generation (upstream parity: a fresh activeWebSocketId per
         // connection) before anything else, so a session opened after close() or after a
+        //
         // competing connection is born stale — and a superseded attempt can detect it.
         val generation = sessionGeneration.incrementAndGet()
         // A superseded live session's heartbeat/watchdog must not keep firing against the
         // replacement socket before its own HELLO: its handleDisconnect returns early on
+        //
         // the stale-generation guard and would never cancel them (they are siblings of the
         // scope, not children of the superseded attempt).
         heartbeatJob?.cancel()
@@ -210,6 +234,7 @@ open class GatewayWebSocket(
             } catch (e: Exception) {
                 // A superseded attempt (cancelled by a newer connect()/close() while
                 // parked or in flight) must NOT schedule a reconnection: its backoff job
+                //
                 // would cancel the live session's job and cascade into false abandonments
                 // (upstream parity: only the active generation reconnects).
                 if (generation == sessionGeneration.get()) {
@@ -235,8 +260,10 @@ open class GatewayWebSocket(
         } catch (e: Exception) {
             // Ktor turns a refused upgrade into a bare exception (WebSocketException for
             // a non-101 status, or a cast failure for the missing session content) that
+            //
             // carries no status and no headers: the real HTTP refusal lives in
             // lastUpgradeRefusal, captured by the interceptor of the default clientFactory
+            //
             // (upstream parity: DiscordGateway.onFailure reads status + Retry-After from
             // the OkHttp response).
             consumeCapturedUpgradeRefusal()
@@ -270,6 +297,7 @@ open class GatewayWebSocket(
             ws.incoming.receiveAsFlow().collect { frame ->
                 // Stale-frame guard: a frame delivered from a session that has already been
                 // superseded by a newer connection must not be processed (upstream parity:
+                //
                 // onMessage checks wsId == activeWebSocketId).
                 if (generation != sessionGeneration.get()) {
                     Timber.tag(tag).w("Ignoring frame from stale session (generation=$generation, active=${sessionGeneration.get()})")
@@ -303,6 +331,7 @@ open class GatewayWebSocket(
     private suspend fun handlePayload(payload: Payload) {
         // Sequence guard (upstream parity: handleFrame L241-244): only a non-zero sequence
         // advances the counter — an `s: 0` payload must never reset it, or RESUME would
+        //
         // replay with seq 0 and the heartbeat would send `d: null` mid-session.
         val s = payload.s
         if (s != null && s > 0) {
@@ -359,8 +388,10 @@ open class GatewayWebSocket(
         } else {
             // Fresh session: no jitter on the first heartbeat. The gateway only completes
             // the identify (READY) once it has received the first heartbeat, so parking
+            //
             // it behind the full HELLO jitter (up to heartbeat_interval, ~42 s) delayed
             // READY — and with it the first presence update — by the same amount. The
+            //
             // server answers the early heartbeat with a HEARTBEAT_ACK as usual; the loop
             // below keeps the jittered interval.
             Timber.tag(tag).i("Sending Identify (fresh session)")
@@ -415,6 +446,7 @@ open class GatewayWebSocket(
         }
         // Always close with 4000 (upstream parity: L291, in both cases) — no resume/identify
         // in situ on an invalidated socket. The reconnect flows through the existing 4000
+        //
         // path on a NEW socket: resume if session+seq>0, identify otherwise.
         session?.close(CloseReason(4000, "Invalid session"))
     }
@@ -422,6 +454,7 @@ open class GatewayWebSocket(
     private suspend fun handleDisconnect(generation: Int, ws: DefaultClientWebSocketSession) {
         // Stale-close guard (upstream parity: handleClose L306-313): a close event from a
         // session that is no longer the active one (superseded by a reconnection, or the
+        //
         // gateway was closed) must not reset the live session's state or trigger anything.
         if (generation != sessionGeneration.get()) {
             Timber.tag(tag).w("Ignoring stale disconnect (generation=$generation, active=${sessionGeneration.get()})")
@@ -442,6 +475,7 @@ open class GatewayWebSocket(
             code == 1000 -> {
                 // Clean remote close: the session is over on purpose — reset and stay offline
                 // (upstream parity: handleClose code 1000 && remote). A manual connect() or the
+                //
                 // next setActivity re-establishes the connection.
                 Timber.tag(tag).i("Clean remote close (1000) — resetting session, no reconnect")
                 sessionId = null
@@ -452,6 +486,7 @@ open class GatewayWebSocket(
                 Timber.tag(tag).e("Token invalid (4004) — will not reconnect")
                 // Surface the terminal error (item 9) and reset the session state: without
                 // the reset, a later connect() would reuse the stale resumeUrl and send an
+                //
                 // obsolete RESUME (L294-300 equivalent) for a dead token.
                 _terminalCloseCode.update { 4004 }
                 sessionId = null
@@ -526,6 +561,7 @@ open class GatewayWebSocket(
         heartbeatJob?.cancel()
         // Computed once per session: the jittered interval is stable for the whole loop
         // (upstream parity: startHeartbeat L406/L412 — a single applyJitter result reused
+        //
         // at every tick), which de-synchronizes the fleet's heartbeats without drifting
         // the per-session cadence.
         val jitteredInterval = applyHeartbeatJitter(heartbeatInterval)
@@ -659,6 +695,7 @@ open class GatewayWebSocket(
         }
         // The wait above can take up to 30s: re-validate staleness right before
         // writing, not only at the call site, or a superseded presence could still
+        //
         // land after a newer activity/clear arrived during the wait.
         if (staleCheck != null && !staleCheck()) {
             Timber.tag(tag).w("updatePresence: superseded while waiting for session — skipping")
@@ -667,6 +704,7 @@ open class GatewayWebSocket(
         Timber.tag(tag).d("updatePresence: session ready after ${System.currentTimeMillis() - startTime}ms")
         // Upstream parity (buildPresenceUpdate since: Long = 0): the presence update always
         // encodes `since` as 0 — Discord manages the "online since" itself; a null would
+        //
         // serialize as `"since": null` (explicitNulls is on by default) and reset the timer.
         val presenceToSend = presence.copy(since = presence.since ?: 0L)
         lastPresence = presenceToSend
@@ -693,8 +731,10 @@ open class GatewayWebSocket(
         }
         // Forget the previous presence so a reconnection (READY/RESUMED dispatch)
         // never re-sends an activity the app no longer wants: resendLastPresence()
+        //
         // would otherwise resurrect a stale "Browsing" status after the user
         // disabled it. Clearing while the session is down must also drop the
+        //
         // memory, or the next READY dispatch re-sends it.
         lastPresence = null
         Timber.tag(tag).d("clearPresence: lastPresence cleared (no stale re-send on reconnect)")
@@ -719,6 +759,7 @@ open class GatewayWebSocket(
         intentionalClose = true
         // Terminal: the client is released below, so a later connect()/setActivity() on
         // this instance must not start attempts against a dead client (they would burn
+        //
         // the reconnection budget and flip reconnectAbandoned — a false toast).
         closed = true
         // Invalidate the active generation: the dying session's close event must be
@@ -733,6 +774,7 @@ open class GatewayWebSocket(
             } catch (_: Exception) { }
             // Release the client only after the session close handshake: its engine (OkHttp
             // dispatcher + connection pool) hosts the socket, and shutting it down first would
+            //
             // drop the close frame. Upstream parity: DiscordGateway.closeHttp().
             client.close()
         }
@@ -743,6 +785,15 @@ open class GatewayWebSocket(
     companion object {
         private const val GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
         private const val USER_AGENT = "Discord-Android/314013;RNA"
+
+        /**
+         * Root-level offline gate, wired by the app at startup (MainApplication).
+         * When non-null and false, the WebSocket upgrade request short-circuits with
+         * a synthetic 503 before leaving the process. Read live per request. Null
+         * until wired keeps the module self-contained for tests/standalone use.
+         */
+        @Volatile
+        var offlineGate: (() -> Boolean)? = null
 
         internal val gatewayExceptionHandler = CoroutineExceptionHandler { _, e ->
             Timber.tag("DiscordGateway").e(e, "GatewayWebSocket scope coroutine failed")
