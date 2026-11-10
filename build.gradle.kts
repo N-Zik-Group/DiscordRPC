@@ -41,7 +41,7 @@ dependencies {
     implementation(libs.timber)
     
     // Fallback for org.json (if android.jar doesn't provide it during tests)
-    compileOnly("org.json:json:20231013")
+    compileOnly("org.json:json:20260719")
 
     coreLibraryDesugaring(libs.desugaring.nio)
 
