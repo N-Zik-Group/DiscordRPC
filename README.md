@@ -74,6 +74,10 @@ Use this command to clone the repo
 git clone https://github.com/N-Zik-Group/DiscordRPC.git
 ```
 
+# 👀 Status
+
+[![CodeQL](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/codeql.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/codeql.yml)
+
 # 👥 Contributors
 
 [![GitHub contributors](https://contrib.rocks/image?repo=N-Zik-Group/DiscordRPC)](https://github.com/N-Zik-Group/DiscordRPC/graphs/contributors)
