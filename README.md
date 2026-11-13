@@ -65,6 +65,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, verification and pull requests
 
 # 👀 Status
 
+[![Add to N-Zik RoadMap](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/mobile-roadmap.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/mobile-roadmap.yml)
+
+[N-Zik mobile roadmap](https://github.com/orgs/N-Zik-Group/projects/1)
+
 [![Refresh contributor grids](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/readme-contributors.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/readme-contributors.yml)
 
 [![CodeQL](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/codeql.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/codeql.yml)  
