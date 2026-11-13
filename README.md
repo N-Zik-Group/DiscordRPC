@@ -61,18 +61,7 @@ implementation(projects.discordrpc)
 
 # 🤝 Contributing
 
-## 🛠️ Improve the Module
-
-Pull requests are welcome!
-Feel free to fix bugs, enhance features, or suggest new ideas.
-
-# 📜 Clone the repo
-
-Use this command to clone the repo
-
-```
-git clone https://github.com/N-Zik-Group/DiscordRPC.git
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, verification and pull requests.
 
 # 👀 Status
 
