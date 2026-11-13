@@ -1,0 +1,54 @@
+name: Add to N-Zik RoadMap
+
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      number:
+        description: Repository issue or pull request number
+        required: true
+        type: number
+
+permissions: {}
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ROADMAP_TOKEN }}
+      ITEM_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number || inputs.number }}
+    steps:
+      - name: Add the repository item to the mobile roadmap
+        if: env.GH_TOKEN != ''
+        shell: bash
+        run: |
+          if [[ ! "$ITEM_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Expected a positive issue or pull request number."
+            exit 1
+          fi
+
+          ids=$(gh api graphql -F number="$ITEM_NUMBER" -f query='
+            query($number: Int!) {
+              organization(login: "N-Zik-Group") {
+                projectV2(number: 1) { id }
+                repository(name: "DiscordRPC") {
+                  issueOrPullRequest(number: $number) {
+                    ... on Issue { id }
+                    ... on PullRequest { id }
+                  }
+                }
+              }
+            }')
+
+          project_id=$(jq -er '.data.organization.projectV2.id' <<< "$ids")
+          content_id=$(jq -er '.data.organization.repository.issueOrPullRequest.id' <<< "$ids")
+
+          gh api graphql -f project="$project_id" -f content="$content_id" -f query='
+            mutation($project: ID!, $content: ID!) {
+              addProjectV2ItemById(input: {projectId: $project, contentId: $content}) {
+                item { id }
+              }
+            }' --jq '.data.addProjectV2ItemById.item.id'
