@@ -74,11 +74,8 @@ Use this command to clone the repo
 git clone https://github.com/N-Zik-Group/DiscordRPC.git
 ```
 
-# 🫂 Acknowledgements
+# 🎖️ Credits
 
-### 🛠 Based on / Inspired by:
+See the [N-Zik credits](https://github.com/N-Zik-Group/N-Zik/blob/main/ComposeN-Zik/src/androidMain/res/raw/credits.md#android-extension-modules).
 
-- [**MetroList**](https://github.com/MetrolistGroup/Metrolist): The Discord RPC implementation this project is based on.
-
-Made with ❤️ by [NEVARLeVrai](https://github.com/NEVARLeVrai)
-Licensed under GPLv3 - see [LICENSE](LICENSE)
+Made with ❤️ by the N-Zik Group community · Project license: GPLv3 - see [LICENSE](LICENSE)
