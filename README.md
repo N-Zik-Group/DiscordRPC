@@ -76,6 +76,8 @@ git clone https://github.com/N-Zik-Group/DiscordRPC.git
 
 # 👀 Status
 
+[![Refresh contributor grids](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/readme-contributors.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/readme-contributors.yml)
+
 [![CodeQL](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/codeql.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/codeql.yml)  
 [![Code Coverage Agent](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/code-coverage-agent/code-coverage-agent/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/code-coverage-agent/code-coverage-agent)  
 [![Copilot cloud agent](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/copilot-swe-agent/copilot/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/copilot-swe-agent/copilot)  
@@ -86,7 +88,11 @@ git clone https://github.com/N-Zik-Group/DiscordRPC.git
 
 # 👥 Contributors
 
-[![GitHub contributors](https://contrib.rocks/image?repo=N-Zik-Group/DiscordRPC)](https://github.com/N-Zik-Group/DiscordRPC/graphs/contributors)
+<!-- project-contributors:start -->
+<p align="center">
+<a href="https://github.com/NEVARLeVrai"><img src="https://avatars.githubusercontent.com/u/63956787?v=4" width="54" height="54" alt="NEVARLeVrai" title="NEVARLeVrai" /></a>
+</p>
+<!-- project-contributors:end -->
 
 # 🎖️ Credits
 
