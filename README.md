@@ -18,6 +18,7 @@
   
   [![License: GPL v3](https://img.shields.io/github/license/N-Zik-Group/DiscordRPC?style=flat&color=blue)](https://www.gnu.org/licenses/gpl-3.0)
   [![CodeFactor](https://img.shields.io/codefactor/grade/github/N-Zik-Group/DiscordRPC?style=flat&label=CodeFactor)](https://www.codefactor.io/repository/github/n-zik-group/discordrpc)
+[![GitHub Code Quality](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/github-code-quality/codeql/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/github-code-quality/codeql)
   
 </div>
 
@@ -67,13 +68,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, verification and pull requests
 
 [![N-Zik Roadmap](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/mobile-roadmap.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/mobile-roadmap.yml)
 
+[![Roadmap Reconciliation](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/roadmap-reconcile.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/roadmap-reconcile.yml)
+
 [N-Zik roadmap](https://github.com/orgs/N-Zik-Group/projects/1)
 
 [![Refresh contributor grids](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/readme-contributors.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/readme-contributors.yml)
 
 [![CodeQL](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/codeql.yml/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/codeql.yml)  
 [![Code Coverage Agent](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/code-coverage-agent/code-coverage-agent/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/code-coverage-agent/code-coverage-agent)  
-[![Dependabot Updates](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/dependabot/dependabot-updates)  
 [![Automatic Dependency Submission](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/dependency-graph/auto-submission/badge.svg)](https://github.com/N-Zik-Group/DiscordRPC/actions/workflows/dependency-graph/auto-submission)  
 
 # 👥 Contributors
